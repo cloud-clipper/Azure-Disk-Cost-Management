@@ -1,0 +1,106 @@
+#!/bin/bash
+
+set -e
+
+TARGET_SKU="StandardSSD_LRS"
+
+echo "Scanning for VMs using Premium SSD (OS or Data disks)..."
+echo "====================================================================="
+
+# Get VM list into variable (NOT piped loop)
+vm_list=$(az vm list --query "[].{name:name, rg:resourceGroup}" -o tsv)
+
+while read -r name rg
+do
+    osDiskType=$(az vm show -g "$rg" -n "$name" \
+        --query "storageProfile.osDisk.managedDisk.storageAccountType" -o tsv)
+
+    dataDiskTypes=$(az vm show -g "$rg" -n "$name" \
+        --query "storageProfile.dataDisks[].managedDisk.storageAccountType" -o tsv)
+
+    if [[ "$osDiskType" == "Premium_LRS" ]] || echo "$dataDiskTypes" | grep -q "Premium_LRS"
+    then
+        echo ""
+        echo "---------------------------------------------------------------------"
+        echo "VM Name        : $name"
+        echo "Resource Group : $rg"
+        echo "OS Disk Type   : $osDiskType"
+        echo "Data Disk Type : ${dataDiskTypes:-None}"
+        echo "---------------------------------------------------------------------"
+
+        # Read directly from keyboard (fixes infinite loop bug)
+        while true; do
+            read -p "Convert this VM disks to Standard SSD? (yes/no): " answer < /dev/tty
+            answer=$(echo "$answer" | tr '[:upper:]' '[:lower:]')
+
+            case $answer in
+                yes|y )
+                    convert=true
+                    break
+                    ;;
+                no|n )
+                    convert=false
+                    break
+                    ;;
+                * )
+                    echo "Please enter yes or no."
+                    ;;
+            esac
+        done
+
+        if $convert
+        then
+            echo "Stopping VM..."
+            az vm stop -g "$rg" -n "$name"
+
+            echo "Deallocating VM..."
+            az vm deallocate -g "$rg" -n "$name"
+
+            # Convert OS disk
+            if [[ "$osDiskType" == "Premium_LRS" ]]
+            then
+                osDiskName=$(az vm show -g "$rg" -n "$name" \
+                    --query "storageProfile.osDisk.name" -o tsv)
+
+                echo "Converting OS Disk: $osDiskName"
+                az disk update -g "$rg" -n "$osDiskName" \
+                    --sku $TARGET_SKU
+            fi
+
+            # Convert Data disks
+            dataDiskNames=$(az vm show -g "$rg" -n "$name" \
+                --query "storageProfile.dataDisks[].name" -o tsv)
+
+            for disk in $dataDiskNames
+            do
+                diskType=$(az disk show -g "$rg" -n "$disk" \
+                    --query "sku.name" -o tsv)
+
+                if [[ "$diskType" == "Premium_LRS" ]]
+                then
+                    echo "Converting Data Disk: $disk"
+                    az disk update -g "$rg" -n "$disk" \
+                        --sku $TARGET_SKU
+                fi
+            done
+
+            echo "Starting VM..."
+            az vm start -g "$rg" -n "$name"
+
+            echo ""
+            echo "Final Disk Configuration:"
+            az vm show -g "$rg" -n "$name" \
+                --query "{OS_Disk:storageProfile.osDisk.managedDisk.storageAccountType, Data_Disks:storageProfile.dataDisks[].managedDisk.storageAccountType}" \
+                -o table
+
+            echo "Conversion Completed for VM: $name"
+        else
+            echo "Skipping VM: $name"
+        fi
+    fi
+
+done <<< "$vm_list"
+
+echo ""
+echo "====================================================================="
+echo "Script Execution Completed."
