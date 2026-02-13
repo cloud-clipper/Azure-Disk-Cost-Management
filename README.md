@@ -3,7 +3,7 @@ This script will:
 
 1. **Detect VMs using Premium SSD (OS + Data disks)**
 
-2. **Ask user: Convert to Standard SSD (StandardSSD_LRS)?** (yes/no)
+2. **Asks Admin: Convert to Standard SSD (StandardSSD_LRS)?** (yes/no)
 
 3. **If yes:**
 
